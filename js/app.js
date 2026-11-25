@@ -929,4 +929,14 @@ document.addEventListener("visibilitychange", () => {
   } else sessionSet("lastSeen", curDate);
 });
 window.addEventListener("online", () => S.syncConfigured(sync) && syncNow());
-if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+    .then((reg) => { reg.update(); document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && reg.update()); })
+    .catch(() => {});
+  // When a new version takes over, reload once so you see it straight away
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (hadController && !reloaded && !isTyping()) { reloaded = true; location.reload(); }
+  });
+}
