@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RepTrack</title>
+  <meta name="description" content="Daily workout, supplement, meal and progress tracker">
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RepTrack">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="26" height="26"><span>RepTrack</span></div>
+    <span id="sync-badge" class="sync-badge"></span>
+  </header>
+
+  <main id="app" aria-live="polite"></main>
+
+  <div id="rest" class="rest" hidden>
+    <span class="rest-l">Rest</span>
+    <b id="rest-time">1:30</b>
+    <button data-rest="-15">−15s</button>
+    <button data-rest="15">+15s</button>
+    <button data-rest="stop" aria-label="Close timer">✕</button>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <nav class="tabbar">
+    <button data-tab="today"><svg viewBox="0 0 24 24"><path d="M6 8v8M18 8v8M3 10v4M21 10v4M6 12h12"/></svg><span>Today</span></button>
+    <button data-tab="progress"><svg viewBox="0 0 24 24"><path d="M3 19h18M5 15l4-4 4 3 6-7"/></svg><span>Progress</span></button>
+    <button data-tab="plan"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM9 11h7M9 15h7"/></svg><span>Plan</span></button>
+    <button data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg><span>Data</span></button>
+  </nav>
+
+  <noscript>RepTrack needs JavaScript enabled.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

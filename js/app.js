@@ -1,0 +1,788 @@
+import { PLAN } from "./plan.js";
+import * as S from "./store.js";
+
+/* ================= state ================= */
+let data = S.loadData(PLAN.profileDefaults);
+let sync = S.loadSyncSettings();
+let syncState = { sha: null, status: "off", msg: "" };
+let tab = sessionGet("tab") || "today";
+let curDate = todayKey();
+let progressEx = sessionGet("progressEx") || "machine-chest-press";
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const app = $("#app");
+
+function sessionGet(k) { try { return sessionStorage.getItem("rt." + k); } catch { return null; } }
+function sessionSet(k, v) { try { sessionStorage.setItem("rt." + k, v); } catch {} }
+
+/* ================= dates ================= */
+function todayKey() { return toKey(new Date()); }
+function toKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function fromKey(k) { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); }
+function addDays(k, n) { const d = fromKey(k); d.setDate(d.getDate() + n); return toKey(d); }
+function weekStart(k) { const d = fromKey(k); const wd = (d.getDay() + 6) % 7; d.setDate(d.getDate() - wd); return toKey(d); }
+function dayDiff(a, b) { return Math.round((fromKey(b) - fromKey(a)) / 86400000); }
+function fmtDate(k, opts = { weekday: "long", day: "numeric", month: "long" }) {
+  return fromKey(k).toLocaleDateString(undefined, opts);
+}
+
+/* ================= data helpers ================= */
+function getDay(k) { return data.days[k] || {}; }
+function editDay(k, fn) {
+  const d = data.days[k] || (data.days[k] = {});
+  fn(d);
+  d._t = Date.now();
+  persist();
+}
+function persist() {
+  data.updatedAt = Date.now();
+  S.saveLocal(data);
+  scheduleSync();
+}
+function plannedType(k) { return PLAN.schedule[fromKey(k).getDay()] || "rest"; }
+function dayType(k) { return getDay(k).type || plannedType(k); }
+
+function num(v) { const n = parseFloat(String(v).replace(",", ".")); return isFinite(n) ? n : null; }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function fmtNum(n, d = 1) { return n == null ? "—" : (Math.round(n * 10 ** d) / 10 ** d).toString(); }
+
+function allExercises() {
+  const out = [];
+  for (const [wid, w] of Object.entries(PLAN.workouts)) for (const e of w.exercises) out.push({ ...e, workout: wid });
+  return out;
+}
+const EX = Object.fromEntries(allExercises().map((e) => [e.id, e]));
+
+function setHasData(s) { return s && (s.done || num(s.w) != null || num(s.r) != null); }
+
+// Previous session for an exercise before date k
+function lastSession(exId, k) {
+  const keys = Object.keys(data.days).filter((d) => d < k).sort().reverse();
+  for (const d of keys) {
+    const e = data.days[d].ex?.[exId];
+    if (e && e.sets?.some((s) => s.done)) return { date: d, sets: e.sets.filter((s) => s.done) };
+  }
+  return null;
+}
+
+function progressionHint(ex, last) {
+  if (!last) return null;
+  const sets = last.sets;
+  const topHit = sets.length >= ex.sets && sets.every((s) => (num(s.r) ?? 0) >= ex.max);
+  if (!topHit) return null;
+  if (ex.assisted) return "Hit the top of the range on every set — try a little less assistance.";
+  if (ex.bodyweight) return ex.unit === "sec" ? "Hit the top of the range — add a few seconds if it feels solid." : "Hit the top of the range — add reps or slow the tempo.";
+  return "Hit the top of the range on every set — increase the load slightly today.";
+}
+
+function dayNutrition(day) {
+  let kcal = 0, protein = 0;
+  for (const m of PLAN.meals) if (day.meals?.[m.id]) { kcal += m.kcal; protein += m.protein; }
+  if (day.supp?.whey) protein += 22;
+  kcal += num(day.extraKcal) || 0;
+  protein += num(day.extraProtein) || 0;
+  return { kcal, protein };
+}
+
+function workoutProgress(k) {
+  const day = getDay(k), type = dayType(k);
+  if (type === "rest") return null;
+  const exs = PLAN.workouts[type].exercises;
+  let done = 0, total = 0;
+  for (const e of exs) {
+    total += e.sets;
+    done += Math.min(e.sets, (day.ex?.[e.id]?.sets || []).filter((s) => s.done).length);
+  }
+  return { done, total };
+}
+function isWorkoutDone(k) {
+  const day = getDay(k);
+  if (day.workoutDone) return true;
+  const p = workoutProgress(k);
+  return !!p && p.done >= p.total;
+}
+function trainedOn(k) {
+  const day = getDay(k);
+  return day.workoutDone || Object.values(day.ex || {}).some((e) => e.sets?.some((s) => s.done));
+}
+
+/* ================= rendering ================= */
+function render() {
+  document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  const scroll = window.scrollY;
+  if (tab === "today") app.innerHTML = renderToday();
+  else if (tab === "progress") app.innerHTML = renderProgress();
+  else if (tab === "plan") app.innerHTML = renderPlan();
+  else app.innerHTML = renderSettings();
+  renderSyncBadge();
+  return scroll;
+}
+function rerender() { const y = window.scrollY; render(); window.scrollTo(0, y); }
+
+function section(title, body, extra = "", id = "") {
+  return `<section class="card" ${id ? `id="${id}"` : ""}><div class="card-h"><h2>${title}</h2>${extra}</div>${body}</section>`;
+}
+
+/* ---------- TODAY ---------- */
+function renderToday() {
+  const k = curDate, day = getDay(k), type = dayType(k);
+  const isToday = k === todayKey();
+  const chips = ["push", "pull", "legs", "rest"].map((t) =>
+    `<button class="chip ${type === t ? "on" : ""}" data-action="set-type" data-type="${t}">${t === "rest" ? "Rest" : PLAN.workouts[t].name}${plannedType(k) === t ? '<span class="dot"></span>' : ""}</button>`
+  ).join("");
+
+  let html = `
+  <div class="datebar">
+    <button class="icon-btn" data-action="date" data-d="-1" aria-label="Previous day">‹</button>
+    <div class="date-mid">
+      <div class="date-main">${isToday ? "Today" : fmtDate(k, { weekday: "long" })}</div>
+      <div class="date-sub">${fmtDate(k, { day: "numeric", month: "long", year: "numeric" })}${isToday ? "" : ` · <a href="#" data-action="go-today">back to today</a>`}</div>
+    </div>
+    <button class="icon-btn" data-action="date" data-d="1" aria-label="Next day">›</button>
+  </div>
+  <div class="chips">${chips}</div>`;
+
+  html += renderSummary(k);
+
+  if (type !== "rest") html += renderWorkout(k, type);
+  else html += section("Rest day", `<p class="muted">Recovery day. Easy walking is fine. Sleep 7–9 hours and stay hydrated.</p>
+    <p class="muted small">Missed a session? Pick Push, Pull or Legs above to log it today.</p>`);
+
+  html += renderSupplements(k);
+  html += renderMeals(k);
+  html += renderHabits(k);
+  return html;
+}
+
+function renderSummary(k) {
+  const day = getDay(k);
+  const wp = workoutProgress(k);
+  const sup = PLAN.supplements.filter((s) => !s.optional);
+  const supDone = sup.filter((s) => day.supp?.[s.id]).length;
+  const n = dayNutrition(day);
+  const ring = (pct, label, val) => `
+    <div class="ring-item">
+      <svg viewBox="0 0 36 36" class="ring"><circle cx="18" cy="18" r="15.9" class="ring-bg"/><circle cx="18" cy="18" r="15.9" class="ring-fg" stroke-dasharray="${Math.min(100, pct).toFixed(1)} 100"/></svg>
+      <div class="ring-val">${val}</div><div class="ring-label">${label}</div>
+    </div>`;
+  return `<section class="card summary">
+    ${wp ? ring((wp.done / wp.total) * 100, "Sets", `${wp.done}/${wp.total}`) : ring(100, "Rest", "✓")}
+    ${ring((supDone / sup.length) * 100, "Supps", `${supDone}/${sup.length}`)}
+    ${ring((n.kcal / PLAN.nutrition.kcalMin) * 100, "kcal", n.kcal)}
+    ${ring((n.protein / PLAN.nutrition.proteinMin) * 100, "Protein", `${n.protein}g`)}
+  </section>`;
+}
+
+function renderWorkout(k, type) {
+  const w = PLAN.workouts[type], day = getDay(k);
+  const warm = PLAN.warmup.map((t, i) => `<label class="check"><input type="checkbox" data-action="warmup" data-i="${i}" ${day.warmup?.[i] ? "checked" : ""}><span>${esc(t)}</span></label>`).join("");
+  const exHtml = w.exercises.map((e) => renderExercise(k, e)).join("");
+  const done = isWorkoutDone(k);
+  return section(`${w.name} <span class="muted small">${w.focus}</span>`,
+    `<details class="warmup" ${Object.keys(day.warmup || {}).length < PLAN.warmup.length ? "open" : ""}><summary>Warm-up</summary>${warm}</details>
+     ${exHtml}
+     <label class="field"><span>Workout notes</span><textarea data-field="workoutNotes" rows="2" placeholder="How did it feel? Shoulder OK?">${esc(day.workoutNotes || "")}</textarea></label>
+     <button class="btn ${done ? "btn-done" : "btn-primary"} full" data-action="finish">${done ? "✓ Workout complete" : "Mark workout complete"}</button>`
+  );
+}
+
+function renderExercise(k, e) {
+  const day = getDay(k);
+  const rec = day.ex?.[e.id] || {};
+  const last = lastSession(e.id, k);
+  const sets = rec.sets && rec.sets.length ? rec.sets : Array.from({ length: e.sets }, () => ({}));
+  const hint = progressionHint(e, last);
+  const range = e.min === e.max ? `${e.min}` : `${e.min}–${e.max}`;
+  const wLabel = e.assisted ? "assist kg" : e.bodyweight ? "+kg" : "kg";
+  const rLabel = e.unit === "sec" ? "sec" : "reps";
+  const doneCount = sets.filter((s) => s.done).length;
+  const lastTxt = last ? `Last (${fmtDate(last.date, { day: "numeric", month: "short" })}): ` + last.sets.map((s) => `${num(s.w) != null ? s.w + "×" : ""}${s.r ?? "?"}`).join(", ") : "No previous log yet";
+
+  const rows = sets.map((s, i) => {
+    const ls = last?.sets[i] || last?.sets[last.sets.length - 1];
+    const phW = ls && num(ls.w) != null ? ls.w : (e.bodyweight ? "0" : "");
+    const phR = ls && num(ls.r) != null ? ls.r : String(e.max);
+    return `<div class="set-row ${s.done ? "done" : ""}">
+      <span class="set-n">${i + 1}</span>
+      <input inputmode="decimal" class="in" data-set="${e.id}" data-i="${i}" data-k="w" value="${esc(s.w ?? "")}" placeholder="${esc(phW)}" aria-label="Set ${i + 1} ${wLabel}">
+      <span class="unit">${wLabel}</span>
+      <input inputmode="numeric" class="in" data-set="${e.id}" data-i="${i}" data-k="r" value="${esc(s.r ?? "")}" placeholder="${esc(phR)}" aria-label="Set ${i + 1} ${rLabel}">
+      <span class="unit">${rLabel}</span>
+      <button class="tick ${s.done ? "on" : ""}" data-action="tick" data-ex="${e.id}" data-i="${i}" aria-label="Set ${i + 1} done">✓</button>
+    </div>`;
+  }).join("");
+
+  return `<div class="exercise ${doneCount >= e.sets ? "complete" : ""}">
+    <div class="ex-h">
+      <div><div class="ex-name">${esc(e.name)}${e.shoulder ? ' <span class="tag warn" title="Check with your shoulder specialist">shoulder</span>' : ""}</div>
+      <div class="ex-target">${e.sets} × ${range} ${e.unit}</div></div>
+      <div class="ex-count">${doneCount}/${e.sets}</div>
+    </div>
+    <div class="ex-last">${esc(lastTxt)}</div>
+    ${hint ? `<div class="hint">⬆ ${esc(hint)}</div>` : ""}
+    ${rows}
+    <div class="ex-actions"><button class="link" data-action="add-set" data-ex="${e.id}">+ set</button>${sets.length > 1 ? `<button class="link" data-action="del-set" data-ex="${e.id}">− set</button>` : ""}</div>
+  </div>`;
+}
+
+function renderSupplements(k) {
+  const day = getDay(k);
+  const items = PLAN.supplements.map((s) => `
+    <label class="check big ${day.supp?.[s.id] ? "on" : ""}">
+      <input type="checkbox" data-action="supp" data-id="${s.id}" ${day.supp?.[s.id] ? "checked" : ""}>
+      <span><b>${esc(s.name)}</b><br><span class="muted small">${esc(s.dose)}</span></span>
+    </label>`).join("");
+  return section("Supplements", `<div class="grid2">${items}</div>`, `<button class="link" data-action="supp-all">All taken</button>`);
+}
+
+function renderMeals(k) {
+  const day = getDay(k), n = dayNutrition(day);
+  const items = PLAN.meals.map((m) => `
+    <label class="check meal ${day.meals?.[m.id] ? "on" : ""}">
+      <input type="checkbox" data-action="meal" data-id="${m.id}" ${day.meals?.[m.id] ? "checked" : ""}>
+      <span class="meal-time">${m.time}</span>
+      <span class="meal-body"><b>${esc(m.name)}</b> <span class="muted small">~${m.kcal} kcal · ~${m.protein} g protein</span><br><span class="small">${esc(m.desc)}</span></span>
+    </label>`).join("");
+  return section("Meals",
+    `${items}
+     <div class="row2">
+       <label class="field"><span>Extra kcal</span><input inputmode="numeric" data-field="extraKcal" value="${esc(day.extraKcal ?? "")}" placeholder="0"></label>
+       <label class="field"><span>Extra protein g</span><input inputmode="numeric" data-field="extraProtein" value="${esc(day.extraProtein ?? "")}" placeholder="0"></label>
+     </div>
+     <p class="muted small" id="nutri-line">Logged ≈ <b>${n.kcal}</b> kcal · <b>${n.protein}</b> g protein. Target ${PLAN.nutrition.calories} · ${PLAN.nutrition.protein} protein.</p>`);
+}
+
+function renderHabits(k) {
+  const day = getDay(k);
+  return section("Body & recovery", `
+    <div class="row3">
+      <label class="field"><span>Morning weight (kg)</span><input inputmode="decimal" data-field="weight" value="${esc(day.weight ?? "")}" placeholder="${esc(latestWeight()?.w ?? PLAN.profileDefaults.startWeight)}"></label>
+      <label class="field"><span>Sleep (h)</span><input inputmode="decimal" data-field="sleep" value="${esc(day.sleep ?? "")}" placeholder="8"></label>
+      <label class="field"><span>Water (glasses)</span>
+        <div class="stepper"><button data-action="water" data-d="-1">−</button><b id="water-val">${day.water || 0}</b><button data-action="water" data-d="1">+</button></div></label>
+    </div>
+    <label class="field"><span>Notes</span><textarea data-field="notes" rows="2" placeholder="Energy, appetite, shoulder…">${esc(day.notes || "")}</textarea></label>
+    <p class="muted small">Weigh in the morning after the bathroom, before breakfast.</p>`);
+}
+
+/* ---------- PROGRESS ---------- */
+function weightEntries() {
+  return Object.entries(data.days).filter(([, d]) => num(d.weight) != null).map(([k, d]) => ({ k, w: num(d.weight) })).sort((a, b) => (a.k < b.k ? -1 : 1));
+}
+function latestWeight() { const e = weightEntries(); return e[e.length - 1] || null; }
+function weeklyAverages() {
+  const map = {};
+  for (const e of weightEntries()) (map[weekStart(e.k)] ||= []).push(e.w);
+  return Object.entries(map).sort().map(([wk, ws]) => ({ wk, avg: ws.reduce((a, b) => a + b, 0) / ws.length, n: ws.length }));
+}
+
+function weightAdvice(weeks) {
+  if (weeks.length < 2) return { cls: "info", text: "Log 3–7 morning weights per week. After two weeks you'll see your weekly trend and a calorie recommendation here." };
+  const d1 = weeks[weeks.length - 1].avg - weeks[weeks.length - 2].avg;
+  if (weeks.length >= 3) {
+    const d0 = weeks[weeks.length - 2].avg - weeks[weeks.length - 3].avg;
+    if (d0 <= 0 && d1 <= 0) return { cls: "warn", text: "Weekly average hasn't risen for 2 weeks → add about 150–200 kcal per day (extra bread, oats, rice or olive oil)." };
+    if (d0 > 0.5 && d1 > 0.5) return { cls: "warn", text: "Gaining faster than planned (>0.5 kg/week) → reduce calories slightly." };
+  }
+  if (d1 >= 0.15 && d1 <= 0.4) return { cls: "good", text: `On track: +${fmtNum(d1, 2)} kg vs last week (target 0.2–0.3 kg/week). Keep going.` };
+  if (d1 <= 0) return { cls: "info", text: `Weekly average ${fmtNum(d1, 2)} kg vs last week. If it doesn't rise next week either, add 150–200 kcal/day.` };
+  return { cls: "info", text: `${d1 > 0 ? "+" : ""}${fmtNum(d1, 2)} kg vs last week. Target is about 0.2–0.3 kg/week — judge the trend over several weeks.` };
+}
+
+function renderProgress() {
+  const p = data.profile;
+  const weeks = weeklyAverages();
+  const latest = latestWeight();
+  const cur = weeks.length ? weeks[weeks.length - 1].avg : latest?.w ?? num(p.startWeight);
+  const toGo = num(p.targetWeight) - cur;
+  const startW = num(p.startWeight);
+  const pct = Math.max(0, Math.min(100, ((cur - startW) / (num(p.targetWeight) - startW)) * 100)) || 0;
+  let rate = null;
+  if (weeks.length >= 2) rate = (weeks[weeks.length - 1].avg - weeks[0].avg) / Math.max(1, dayDiff(weeks[0].wk, weeks[weeks.length - 1].wk) / 7);
+  const etaWeeks = toGo > 0 ? toGo / (rate && rate > 0.05 ? rate : 0.25) : 0;
+  const adv = weightAdvice(weeks);
+
+  // weight chart
+  const entries = weightEntries().slice(-120);
+  const chart = entries.length
+    ? lineChart({
+        series: [
+          { pts: entries.map((e) => ({ x: dayDiff(entries[0].k, e.k), y: e.w })), cls: "s-dots", dots: true, line: false },
+          { pts: weeks.filter((w) => w.wk >= weekStart(entries[0].k)).map((w) => ({ x: dayDiff(entries[0].k, w.wk) + 3, y: w.avg })), cls: "s-line", line: true, dots: true },
+        ],
+        target: num(p.targetWeight),
+        xLabel: (x) => fmtDate(addDays(entries[0].k, x), { day: "numeric", month: "short" }),
+      })
+    : `<p class="muted">No weights yet. Add your morning weight below or on the Today tab.</p>`;
+
+  const wForm = `<div class="row2 inline">
+      <label class="field"><span>Date</span><input type="date" id="w-date" value="${todayKey()}" max="${todayKey()}"></label>
+      <label class="field"><span>Weight kg</span><input inputmode="decimal" id="w-val" placeholder="${esc(latest?.w ?? startW)}"></label>
+    </div><button class="btn btn-primary full" data-action="add-weight">Save weight</button>`;
+
+  const recent = weightEntries().slice(-10).reverse().map((e) => `<tr><td>${fmtDate(e.k, { weekday: "short", day: "numeric", month: "short" })}</td><td>${e.w} kg</td><td><button class="link danger" data-action="del-weight" data-k="${e.k}">delete</button></td></tr>`).join("");
+
+  let html = section("Weight",
+    `<div class="stats">
+      <div class="stat"><div class="stat-v">${fmtNum(cur)}</div><div class="stat-l">weekly avg kg</div></div>
+      <div class="stat"><div class="stat-v">${toGo > 0 ? fmtNum(toGo) : "🎉"}</div><div class="stat-l">${toGo > 0 ? "kg to " + p.targetWeight : "target reached"}</div></div>
+      <div class="stat"><div class="stat-v">${rate == null ? "—" : (rate > 0 ? "+" : "") + fmtNum(rate, 2)}</div><div class="stat-l">kg / week</div></div>
+      <div class="stat"><div class="stat-v">${toGo > 0 ? Math.ceil(etaWeeks) : "0"}</div><div class="stat-l">weeks to go*</div></div>
+    </div>
+    <div class="bar"><div class="bar-fg" style="width:${pct}%"></div></div>
+    <div class="bar-l small muted"><span>${startW} kg start</span><span>${p.targetWeight} kg target</span></div>
+    <div class="advice ${adv.cls}">${esc(adv.text)}</div>
+    ${chart}
+    <div class="legend small muted"><span><i class="lg-dot"></i>daily</span><span><i class="lg-line"></i>weekly average</span><span><i class="lg-target"></i>target</span></div>
+    ${wForm}
+    ${recent ? `<details class="mt"><summary>Recent entries</summary><table class="tbl">${recent}</table></details>` : ""}
+    <p class="muted small">*Estimate based on your trend (or 0.25 kg/week until there's enough data).</p>`);
+
+  html += renderConsistency();
+  html += renderExerciseProgress();
+  return html;
+}
+
+function renderConsistency() {
+  const today = todayKey();
+  const ws = weekStart(today);
+  let wDone = 0, sDays = 0, mealsSum = 0, sleepArr = [], kcalArr = [];
+  const coreSupp = PLAN.supplements.filter((s) => !s.optional);
+  for (let i = 0; i < 7; i++) {
+    const k = addDays(ws, i);
+    if (k > today) break;
+    const d = getDay(k);
+    if (trainedOn(k)) wDone++;
+    if (coreSupp.every((s) => d.supp?.[s.id])) sDays++;
+    if (num(d.sleep) != null) sleepArr.push(num(d.sleep));
+    const n = dayNutrition(d);
+    if (n.kcal > 0) kcalArr.push(n.kcal);
+  }
+  const daysSoFar = Math.min(7, dayDiff(ws, today) + 1);
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
+  // last 5 weeks calendar
+  const start = addDays(ws, -28);
+  const trainedKeys = Object.keys(data.days).filter(trainedOn).sort();
+  const firstDay = [data.profile.startDate || today, trainedKeys[0] || today].sort()[0];
+  let cal = `<div class="cal">${["M", "T", "W", "T", "F", "S", "S"].map((d) => `<div class="cal-h">${d}</div>`).join("")}`;
+  for (let i = 0; i < 35; i++) {
+    const k = addDays(start, i);
+    const d = getDay(k);
+    const trained = trainedOn(k);
+    const supp = coreSupp.every((s) => d.supp?.[s.id]);
+    const planned = plannedType(k) !== "rest";
+    cal += `<button class="cal-d ${k === today ? "today" : ""} ${k > today ? "future" : ""} ${trained ? "trained" : planned && k < today && k >= firstDay ? "missed" : ""}" data-action="open-day" data-k="${k}" title="${k}">
+      <span>${fromKey(k).getDate()}</span>${supp ? '<i class="sdot"></i>' : ""}</button>`;
+  }
+  cal += "</div>";
+
+  return section("This week",
+    `<div class="stats">
+      <div class="stat"><div class="stat-v">${wDone}/3</div><div class="stat-l">workouts</div></div>
+      <div class="stat"><div class="stat-v">${sDays}/${daysSoFar}</div><div class="stat-l">supplement days</div></div>
+      <div class="stat"><div class="stat-v">${avg(kcalArr) == null ? "—" : Math.round(avg(kcalArr))}</div><div class="stat-l">avg kcal</div></div>
+      <div class="stat"><div class="stat-v">${avg(sleepArr) == null ? "—" : fmtNum(avg(sleepArr))}</div><div class="stat-l">avg sleep h</div></div>
+    </div>
+    ${cal}
+    <div class="legend small muted"><span><i class="lg-box trained"></i>trained</span><span><i class="lg-box missed"></i>missed</span><span><i class="sdot static"></i>all supplements</span></div>
+    <p class="muted small">Tap a day to open it.</p>`);
+}
+
+function exerciseHistory(id) {
+  const out = [];
+  for (const k of Object.keys(data.days).sort()) {
+    const sets = (data.days[k].ex?.[id]?.sets || []).filter((s) => s.done);
+    if (!sets.length) continue;
+    const ws = sets.map((s) => num(s.w) ?? 0), rs = sets.map((s) => num(s.r) ?? 0);
+    const best = Math.max(...ws);
+    const vol = sets.reduce((a, s) => a + (num(s.w) ?? 0) * (num(s.r) ?? 0), 0);
+    out.push({ k, sets, best, vol, reps: rs.reduce((a, b) => a + b, 0) });
+  }
+  return out;
+}
+
+function renderExerciseProgress() {
+  const opts = Object.entries(PLAN.workouts).map(([, w]) =>
+    `<optgroup label="${w.name}">${w.exercises.map((e) => `<option value="${e.id}" ${e.id === progressEx ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</optgroup>`).join("");
+  const ex = EX[progressEx];
+  const hist = exerciseHistory(progressEx);
+  const useReps = ex.bodyweight && hist.every((h) => h.best === 0);
+  let chart = `<p class="muted">No sessions logged for this exercise yet.</p>`;
+  if (hist.length) {
+    chart = lineChart({
+      series: [{ pts: hist.map((h) => ({ x: dayDiff(hist[0].k, h.k), y: useReps ? h.reps : h.best })), cls: "s-line", line: true, dots: true }],
+      xLabel: (x) => fmtDate(addDays(hist[0].k, x), { day: "numeric", month: "short" }),
+    });
+  }
+  const rows = hist.slice(-8).reverse().map((h) => `<tr><td>${fmtDate(h.k, { day: "numeric", month: "short" })}</td><td>${h.sets.map((s) => `${num(s.w) != null ? s.w + "×" : ""}${s.r ?? "?"}`).join(", ")}</td></tr>`).join("");
+  const first = hist[0], lastH = hist[hist.length - 1];
+  const gain = hist.length > 1 ? (useReps ? `${lastH.reps - first.reps >= 0 ? "+" : ""}${lastH.reps - first.reps} total ${ex.unit}` : `${lastH.best - first.best >= 0 ? "+" : ""}${fmtNum(lastH.best - first.best)} kg top set`) : "";
+  return section("Exercise progress",
+    `<select id="ex-select" class="select">${opts}</select>
+     <p class="small muted">${useReps ? `Chart: total ${ex.unit} per session` : `Chart: heaviest set (${ex.assisted ? "assistance — lower is better" : "kg"})`}${gain ? ` · since first log: <b>${gain}</b>` : ""}</p>
+     ${chart}
+     ${rows ? `<table class="tbl">${rows}</table>` : ""}`);
+}
+
+function lineChart({ series, target, xLabel }) {
+  const W = 340, H = 180, P = { l: 34, r: 10, t: 12, b: 24 };
+  const all = series.flatMap((s) => s.pts);
+  if (!all.length) return "";
+  let ys = all.map((p) => p.y);
+  if (target != null) ys.push(target);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (yMax - yMin < 1) { yMin -= 0.5; yMax += 0.5; }
+  const pad = (yMax - yMin) * 0.1; yMin -= pad; yMax += pad;
+  const xMax = Math.max(1, ...all.map((p) => p.x));
+  const sx = (x) => P.l + (x / xMax) * (W - P.l - P.r);
+  const sy = (y) => P.t + (1 - (y - yMin) / (yMax - yMin)) * (H - P.t - P.b);
+  let g = "";
+  for (let i = 0; i <= 3; i++) {
+    const y = yMin + ((yMax - yMin) * i) / 3;
+    g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(y)}" y2="${sy(y)}" class="grid"/><text x="${P.l - 4}" y="${sy(y) + 3}" class="axis" text-anchor="end">${fmtNum(y)}</text>`;
+  }
+  g += `<text x="${P.l}" y="${H - 6}" class="axis">${esc(xLabel(0))}</text><text x="${W - P.r}" y="${H - 6}" class="axis" text-anchor="end">${esc(xLabel(xMax))}</text>`;
+  if (target != null) g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(target)}" y2="${sy(target)}" class="target"/>`;
+  for (const s of series) {
+    if (s.line && s.pts.length > 1) g += `<polyline class="${s.cls}" fill="none" points="${s.pts.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ")}"/>`;
+    if (s.dots) g += s.pts.map((p) => `<circle class="${s.cls}" cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${s.line ? 3 : 2.5}"/>`).join("");
+  }
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+
+/* ---------- PLAN ---------- */
+function renderPlan() {
+  const p = PLAN;
+  const list = (arr) => `<ul>${arr.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`;
+  const sched = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => {
+    const t = p.schedule[(i + 1) % 7];
+    return `<div class="sched-d ${t ? "train" : ""}"><b>${d}</b><span>${t ? p.workouts[t].name : "Rest"}</span></div>`;
+  }).join("");
+  const workouts = Object.values(p.workouts).map((w) => `
+    <h3>${w.name} <span class="muted small">${w.focus}</span></h3>
+    <table class="tbl"><tr><th>Exercise</th><th>Sets</th><th>Reps</th></tr>
+    ${w.exercises.map((e) => `<tr><td>${esc(e.name)}</td><td>${e.sets}</td><td>${e.min === e.max ? e.min : e.min + "–" + e.max} ${e.unit === "reps" ? "" : e.unit}</td></tr>`).join("")}</table>`).join("");
+  const shop = Object.entries(p.shopping).map(([cat, items]) => `<h3>${cat}</h3>${items.map((it) => `
+    <label class="check"><input type="checkbox" data-action="shop" data-id="${esc(it)}" ${data.shopping.items[it] ? "checked" : ""}><span>${esc(it)}</span></label>`).join("")}`).join("");
+
+  const det = (title, body, open = false) => `<details class="card plan" ${open ? "open" : ""}><summary><h2>${title}</h2></summary><div class="plan-b">${body}</div></details>`;
+
+  return `
+  <section class="card hero"><h1>${esc(p.title)}</h1><p class="muted">${esc(p.tagline)}</p>
+    <div class="stats"><div class="stat"><div class="stat-v">${data.profile.startWeight}</div><div class="stat-l">start kg</div></div>
+    <div class="stat"><div class="stat-v">${data.profile.targetWeight}</div><div class="stat-l">target kg</div></div>
+    <div class="stat"><div class="stat-v">${data.profile.height}</div><div class="stat-l">height cm</div></div></div>
+    <div class="sched">${sched}</div></section>
+  ${p.safetyNotes.map((n) => `<div class="advice warn"><b>${esc(n.title)}:</b> ${esc(n.text)}</div>`).join("")}
+  ${det("Workouts", workouts, true)}
+  ${det("How to train", list(p.howToTrain) + `<h3>Warm-up</h3>` + list(p.warmup))}
+  ${det("Recovery", `<table class="tbl">${p.recovery.map((r) => `<tr><td><b>${r.habit}</b></td><td>${esc(r.target)}</td></tr>`).join("")}</table>`)}
+  ${det("Daily food plan", `
+    <div class="stats"><div class="stat"><div class="stat-v sm">${p.nutrition.calories}</div><div class="stat-l">daily calories</div></div>
+    <div class="stat"><div class="stat-v sm">${p.nutrition.protein}</div><div class="stat-l">daily protein</div></div>
+    <div class="stat"><div class="stat-v sm">${p.nutrition.rate}</div><div class="stat-l">rate of gain</div></div></div>
+    <p class="small">${esc(p.nutrition.calorieNote)}</p>
+    <table class="tbl">${p.meals.map((m) => `<tr><td><b>${m.time}</b><br><span class="small muted">${m.name}</span></td><td class="small">${esc(m.desc)}</td><td class="small">~${m.kcal}</td></tr>`).join("")}</table>
+    <h3>Simple portion swaps</h3>${list(p.swaps)}`)}
+  ${det("Recipes", p.recipes.map((r, i) => `<h3>${i + 1}. ${esc(r.name)}</h3><p class="small"><b>Ingredients:</b> ${esc(r.ingredients)}</p><p class="small"><b>Method:</b> ${esc(r.method)}</p>`).join(""))}
+  ${det("Shopping list", shop + `<button class="link mt" data-action="shop-clear">Clear ticks</button>`)}
+  ${det("Supplements & vitamins", list(p.supplementGuide))}
+  ${det("How to track your weight", list(p.weightTracking))}
+  ${det("Suggestions", `<ol>${p.suggestions.map((t) => `<li>${esc(t)}</li>`).join("")}</ol><p class="small">${esc(p.keepConsistent)}</p>`)}
+  <p class="muted small center">${esc(p.disclaimer)}</p>`;
+}
+
+/* ---------- SETTINGS ---------- */
+function renderSettings() {
+  const p = data.profile;
+  const nDays = Object.keys(data.days).length;
+  return `
+  ${section("Profile", `
+    <div class="row3">
+      <label class="field"><span>Start kg</span><input inputmode="decimal" data-profile="startWeight" value="${esc(p.startWeight)}"></label>
+      <label class="field"><span>Target kg</span><input inputmode="decimal" data-profile="targetWeight" value="${esc(p.targetWeight)}"></label>
+      <label class="field"><span>Height cm</span><input inputmode="decimal" data-profile="height" value="${esc(p.height)}"></label>
+    </div>`)}
+  ${section("Save to a file on GitHub", `
+    <p class="small">Your data is always saved on this phone. Connect GitHub to also save it to a JSON file in a repository — then it's backed up and the same on every device.</p>
+    <details class="small"><summary>How to set up (2 minutes)</summary><ol>
+      <li>Create a <b>private</b> repository on GitHub, e.g. <code>reptrack-data</code> (keeps your health data private).</li>
+      <li>Go to GitHub → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
+      <li>Repository access: <i>Only select repositories</i> → pick that repo. Permissions → Repository → <b>Contents: Read and write</b>.</li>
+      <li>Paste the token and repo name below and tap <b>Save &amp; sync</b>.</li></ol>
+      <p>The token is stored only in this browser and is never put in the data file.</p></details>
+    <label class="field"><span>Repository (owner/name)</span><input id="gh-repo" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(sync.repo)}" placeholder="yourname/reptrack-data"></label>
+    <label class="field"><span>File path</span><input id="gh-path" autocapitalize="off" spellcheck="false" value="${esc(sync.path)}"></label>
+    <label class="field"><span>Branch (blank = default)</span><input id="gh-branch" autocapitalize="off" spellcheck="false" value="${esc(sync.branch)}" placeholder="main"></label>
+    <label class="field"><span>Access token</span><input id="gh-token" type="password" autocomplete="off" value="${esc(sync.token)}" placeholder="github_pat_…"></label>
+    <label class="check"><input type="checkbox" id="gh-auto" ${sync.auto ? "checked" : ""}><span>Sync automatically after each change</span></label>
+    <div class="row2"><button class="btn btn-primary" data-action="gh-save">Save &amp; sync</button><button class="btn" data-action="gh-sync" ${S.syncConfigured(sync) ? "" : "disabled"}>Sync now</button></div>
+    <p class="small" id="sync-msg">${esc(syncMessage())}</p>
+    ${S.syncConfigured(sync) ? `<button class="link danger" data-action="gh-disconnect">Disconnect GitHub</button>` : ""}`)}
+  ${section("Backup file", `
+    <p class="small">${nDays} day${nDays === 1 ? "" : "s"} logged. Download a backup file you can keep in Files / Drive, or restore from one.</p>
+    <div class="row2"><button class="btn" data-action="export">Download backup</button><button class="btn" data-action="import">Restore backup</button></div>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>`)}
+  ${section("Install on your phone", `<p class="small"><b>iPhone (Safari):</b> Share → <i>Add to Home Screen</i>.<br><b>Android (Chrome):</b> ⋮ menu → <i>Add to Home screen</i> / <i>Install app</i>.<br>It then opens full-screen and works offline.</p>`)}
+  ${section("Danger zone", `<button class="btn danger" data-action="reset">Erase all data on this device</button>`)}
+  <p class="muted small center">RepTrack · ${esc(PLAN.disclaimer)}</p>`;
+}
+
+/* ================= sync ================= */
+let syncTimer = null, syncing = false, syncAgain = false;
+function syncMessage() {
+  if (!S.syncConfigured(sync)) return "Not connected.";
+  return syncState.msg || "Connected.";
+}
+function renderSyncBadge() {
+  const b = $("#sync-badge");
+  if (!b) return;
+  const st = S.syncConfigured(sync) ? syncState.status : "off";
+  b.className = "sync-badge " + st;
+  b.textContent = { off: "", ok: "✓ saved", busy: "⟳ syncing", err: "⚠ sync", pending: "• unsynced" }[st] || "";
+  b.title = syncMessage();
+  const m = $("#sync-msg");
+  if (m) m.textContent = syncMessage();
+}
+function scheduleSync() {
+  if (!S.syncConfigured(sync) || !sync.auto) return;
+  syncState.status = "pending";
+  renderSyncBadge();
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, 2500);
+}
+async function syncNow() {
+  if (!S.syncConfigured(sync)) return;
+  if (syncing) { syncAgain = true; return; }
+  if (!navigator.onLine) { syncState = { ...syncState, status: "pending", msg: "Offline — will sync when back online." }; renderSyncBadge(); return; }
+  syncing = true;
+  syncState.status = "busy"; renderSyncBadge();
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const remote = await S.pullRemote(sync);
+      const before = S.canonical(data);
+      const merged = remote.data ? S.merge(data, remote.data, PLAN.profileDefaults) : data;
+      const remoteStr = remote.data ? S.canonical(S.merge(remote.data, remote.data, PLAN.profileDefaults)) : null;
+      if (S.canonical(merged) !== before) {
+        data = merged;
+        S.saveLocal(data);
+        if (!isTyping()) rerender();
+      }
+      if (remoteStr === S.canonical(merged)) { syncState.sha = remote.sha; break; }
+      try {
+        syncState.sha = await S.pushRemote(sync, data, remote.sha);
+        break;
+      } catch (e) {
+        if (!e.conflict || attempt === 2) throw e;
+      }
+    }
+    syncState.status = "ok";
+    syncState.msg = `Synced to ${sync.repo}/${sync.path} at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+  } catch (e) {
+    syncState.status = "err";
+    syncState.msg = "Sync failed: " + e.message;
+  } finally {
+    syncing = false;
+    renderSyncBadge();
+    if (syncAgain) { syncAgain = false; scheduleSync(); }
+  }
+}
+function isTyping() { const a = document.activeElement; return a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA"); }
+
+/* ================= events ================= */
+let restTimer = null;
+function startRest(sec = 90) {
+  const el = $("#rest");
+  let end = Date.now() + sec * 1000;
+  el.hidden = false;
+  clearInterval(restTimer);
+  const tick = () => {
+    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    $("#rest-time").textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+    if (left <= 0) {
+      clearInterval(restTimer);
+      $("#rest-time").textContent = "Go!";
+      try { navigator.vibrate?.([200, 100, 200]); } catch {}
+      setTimeout(() => (el.hidden = true), 4000);
+    }
+  };
+  el.onclick = (ev) => {
+    const a = ev.target.closest("[data-rest]")?.dataset.rest;
+    if (!a) return;
+    if (a === "stop") { clearInterval(restTimer); el.hidden = true; return; }
+    end += parseInt(a, 10) * 1000;
+    tick();
+  };
+  tick();
+  restTimer = setInterval(tick, 500);
+}
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-action], .tabbar button");
+  if (!t) return;
+  if (t.dataset.tab) {
+    tab = t.dataset.tab; sessionSet("tab", tab); render(); window.scrollTo(0, 0); return;
+  }
+  const a = t.dataset.action, k = curDate;
+  switch (a) {
+    case "date": curDate = addDays(curDate, +t.dataset.d); render(); break;
+    case "go-today": ev.preventDefault(); curDate = todayKey(); render(); break;
+    case "open-day": curDate = t.dataset.k; tab = "today"; sessionSet("tab", tab); render(); window.scrollTo(0, 0); break;
+    case "set-type":
+      editDay(k, (d) => { if (t.dataset.type === plannedType(k)) delete d.type; else d.type = t.dataset.type; });
+      rerender(); break;
+    case "tick": {
+      const ex = EX[t.dataset.ex], i = +t.dataset.i;
+      let nowDone = false;
+      editDay(k, (d) => {
+        d.ex ||= {};
+        const rec = (d.ex[ex.id] ||= { sets: Array.from({ length: ex.sets }, () => ({})) });
+        const s = rec.sets[i] || (rec.sets[i] = {});
+        if (!s.done) {
+          const row = t.closest(".set-row");
+          const wIn = row.querySelector('[data-k="w"]'), rIn = row.querySelector('[data-k="r"]');
+          if (s.w == null || s.w === "") s.w = wIn.value || wIn.placeholder;
+          if (s.r == null || s.r === "") s.r = rIn.value || rIn.placeholder;
+        }
+        s.done = !s.done;
+        nowDone = s.done;
+      });
+      rerender();
+      if (nowDone) startRest(90);
+      break;
+    }
+    case "add-set": case "del-set": {
+      const ex = EX[t.dataset.ex];
+      editDay(k, (d) => {
+        d.ex ||= {};
+        const rec = (d.ex[ex.id] ||= { sets: Array.from({ length: ex.sets }, () => ({})) });
+        if (a === "add-set") rec.sets.push({}); else if (rec.sets.length > 1) rec.sets.pop();
+      });
+      rerender(); break;
+    }
+    case "finish": editDay(k, (d) => { d.workoutDone = !isWorkoutDone(k); }); rerender(); if (getDay(k).workoutDone) toast("Workout saved 💪"); break;
+    case "supp-all": editDay(k, (d) => { d.supp ||= {}; PLAN.supplements.filter((s) => !s.optional).forEach((s) => (d.supp[s.id] = true)); }); rerender(); break;
+    case "water": editDay(k, (d) => { d.water = Math.max(0, (d.water || 0) + +t.dataset.d); }); $("#water-val").textContent = getDay(k).water; break;
+    case "add-weight": {
+      const w = num($("#w-val").value), dk = $("#w-date").value;
+      if (w == null || w < 20 || w > 300 || !dk) { toast("Enter a valid weight"); break; }
+      editDay(dk, (d) => { d.weight = w; });
+      toast("Weight saved"); rerender(); break;
+    }
+    case "del-weight": editDay(t.dataset.k, (d) => { delete d.weight; }); rerender(); break;
+    case "shop-clear": data.shopping = { items: {}, _t: Date.now() }; persist(); rerender(); break;
+    case "gh-save": {
+      sync = {
+        repo: $("#gh-repo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, ""),
+        path: $("#gh-path").value.trim().replace(/^\//, "") || "data/reptrack-data.json",
+        branch: $("#gh-branch").value.trim(),
+        token: $("#gh-token").value.trim(),
+        auto: $("#gh-auto").checked,
+      };
+      S.saveSyncSettings(sync);
+      if (!S.syncConfigured(sync)) { syncState.msg = "Enter repository as owner/name and a token."; renderSyncBadge(); break; }
+      syncState.msg = "Syncing…"; rerender(); syncNow(); break;
+    }
+    case "gh-sync": syncNow(); break;
+    case "gh-disconnect":
+      if (confirm("Disconnect GitHub on this device? Your data stays on the phone and in the GitHub file.")) {
+        sync = { ...sync, token: "" }; S.saveSyncSettings(sync); syncState = { sha: null, status: "off", msg: "" }; rerender();
+      }
+      break;
+    case "export": exportData(); break;
+    case "import": $("#import-file").click(); break;
+    case "reset":
+      if (confirm("Erase ALL RepTrack data on this device? (A GitHub copy, if connected, is not deleted.)") && confirm("Are you sure?")) {
+        data = S.emptyData(PLAN.profileDefaults); S.saveLocal(data); rerender(); toast("Data erased");
+      }
+      break;
+  }
+});
+
+document.addEventListener("change", (ev) => {
+  const t = ev.target, k = curDate;
+  const a = t.dataset.action;
+  if (a === "warmup") editDay(k, (d) => { (d.warmup ||= {})[t.dataset.i] = t.checked; if (!t.checked) delete d.warmup[t.dataset.i]; });
+  else if (a === "supp") { editDay(k, (d) => { (d.supp ||= {})[t.dataset.id] = t.checked; }); rerenderSoon(); }
+  else if (a === "meal") { editDay(k, (d) => { (d.meals ||= {})[t.dataset.id] = t.checked; }); rerenderSoon(); }
+  else if (a === "shop") { data.shopping.items[t.dataset.id] = t.checked; data.shopping._t = Date.now(); persist(); }
+  else if (t.id === "ex-select") { progressEx = t.value; sessionSet("progressEx", progressEx); rerender(); }
+  else if (t.id === "import-file" && t.files[0]) importData(t.files[0]);
+  else if (t.dataset.field || t.dataset.set) refreshSummary();
+});
+
+function rerenderSoon() { if (tab === "today") { const y = window.scrollY; render(); window.scrollTo(0, y); } }
+// Update only the summary rings + nutrition line (keeps keyboard focus on mobile)
+function refreshSummary() {
+  if (tab !== "today") return;
+  const old = $(".summary");
+  if (old) { const tmp = document.createElement("div"); tmp.innerHTML = renderSummary(curDate); old.replaceWith(tmp.firstElementChild); }
+  const n = dayNutrition(getDay(curDate)), line = $("#nutri-line");
+  if (line) line.innerHTML = `Logged ≈ <b>${n.kcal}</b> kcal · <b>${n.protein}</b> g protein. Target ${PLAN.nutrition.calories} · ${PLAN.nutrition.protein} protein.`;
+}
+
+document.addEventListener("input", (ev) => {
+  const t = ev.target, k = curDate;
+  if (t.dataset.field) {
+    editDay(k, (d) => { if (t.value === "") delete d[t.dataset.field]; else d[t.dataset.field] = t.value; });
+  } else if (t.dataset.set) {
+    const ex = EX[t.dataset.set], i = +t.dataset.i;
+    editDay(k, (d) => {
+      d.ex ||= {};
+      const rec = (d.ex[ex.id] ||= { sets: Array.from({ length: ex.sets }, () => ({})) });
+      (rec.sets[i] ||= {})[t.dataset.k] = t.value;
+    });
+  } else if (t.dataset.profile) {
+    const v = num(t.value);
+    if (v != null) { data.profile[t.dataset.profile] = v; data.profile._t = Date.now(); persist(); }
+  }
+});
+
+function exportData() {
+  const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `reptrack-backup-${todayKey()}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function importData(file) {
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const d = JSON.parse(r.result);
+      if (!d || typeof d.days !== "object") throw new Error("Not a RepTrack backup");
+      const replace = confirm("Restore backup: OK = merge with current data, Cancel = abort.");
+      if (!replace) return;
+      data = S.merge(data, d, PLAN.profileDefaults);
+      persist(); rerender(); toast("Backup restored");
+    } catch (e) { toast("Could not read file: " + e.message); }
+  };
+  r.readAsText(file);
+}
+
+let toastT;
+function toast(msg) {
+  const el = $("#toast");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+/* ================= boot ================= */
+// first run: if never edited, set start date
+if (!data.profile.startDate) { data.profile.startDate = todayKey(); S.saveLocal(data); }
+render();
+if (S.syncConfigured(sync)) syncNow();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    if (isTyping()) document.activeElement.blur();
+    if (curDate !== todayKey() && sessionGet("lastSeen") === curDate) curDate = todayKey();
+    if (S.syncConfigured(sync)) syncNow();
+    if (!isTyping()) rerender();
+  } else sessionSet("lastSeen", curDate);
+});
+window.addEventListener("online", () => S.syncConfigured(sync) && syncNow());
+if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
