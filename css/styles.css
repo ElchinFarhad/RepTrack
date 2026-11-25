@@ -277,3 +277,8 @@ details.card.plan[open] > summary::after { transform: rotate(90deg); }
 .ed-more > summary::-webkit-details-marker { display: none; }
 .ed-edit { color: var(--accent); font-weight: 600; margin-left: 6px; }
 .ed-more[open] .ed-edit { display: none; }
+.steps { padding-left: 18px; }
+.steps li { margin: 10px 0; }
+.small-btn { display: inline-block; margin: 6px 0 4px; padding: 9px 12px; font-size: 14px; text-decoration: none; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+.steps li > span { display: block; }

@@ -38,10 +38,10 @@ A mobile-first web app for following a 3-day muscle-gain plan (workouts, supplem
 ## Where your data is stored
 
 1. **On your phone**, in the browser's local storage. This happens automatically and works offline.
-2. **In a file on GitHub** (optional, recommended). In the app go to **Data → Save to a file on GitHub**:
+2. **In a file on GitHub** (optional, recommended). In the app go to **Data → ☁ Cloud save**. The buttons there walk you through it:
    - Create a **private** repo, e.g. `reptrack-data`.
    - Create a fine-grained personal access token with access to only that repo and **Contents: Read and write**.
-   - Enter `yourname/reptrack-data` and the token, then tap **Save & sync**.
+   - Paste the token and tap **Connect & save my data**. Your username is detected automatically.
 
    Every change is then committed to `data/reptrack-data.json` in that repo. If you use more than one device, changes are merged day by day. The token stays in your browser only.
 3. **Backup file**: **Data → Download backup** gives you a `.json` file you can keep in Files or Drive.

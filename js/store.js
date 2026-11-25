@@ -161,3 +161,22 @@ export function canonical(obj) {
       : v;
   return JSON.stringify(sort(obj));
 }
+
+/* account helpers used when connecting */
+async function ghGet(token, url) {
+  const res = await fetch("https://api.github.com" + url, { cache: "no-store", headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
+  return res;
+}
+export async function githubLogin(token) {
+  const res = await ghGet(token, "/user");
+  if (res.status === 401) throw new Error("GitHub didn't accept this key. Copy it again (it starts with github_pat_).");
+  if (!res.ok) throw new Error(`GitHub error ${res.status}`);
+  return (await res.json()).login;
+}
+export async function githubRepo(token, repo) {
+  const res = await ghGet(token, `/repos/${repo}`);
+  if (res.status === 401) throw new Error("GitHub didn't accept this key. Copy it again (it starts with github_pat_).");
+  if (res.status === 404) throw new Error(`Can't find "${repo}" with this key. Check the repo name, and that the key has access to this repository.`);
+  if (!res.ok) throw new Error(`GitHub error ${res.status}`);
+  return res.json();
+}

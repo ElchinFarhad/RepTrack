@@ -568,33 +568,53 @@ function renderEditor() {
   <p class="muted small">Deleting a workout or exercise keeps your logged history.</p>`;
 }
 
+function renderCloud() {
+  const connected = S.syncConfigured(sync);
+  const fileUrl = connected ? `https://github.com/${sync.repo}/blob/${sync.branch || "HEAD"}/${sync.path}` : "";
+  if (connected) {
+    return section("☁ Cloud save (GitHub)", `
+      <div class="advice ${syncState.status === "err" ? "warn" : "good"}">Connected to <b>${esc(sync.repo)}</b>. Every change is saved to <code>${esc(sync.path)}</code>.</div>
+      ${syncState.publicRepo ? `<div class="advice warn">⚠ This repository is <b>public</b>, so anyone can see your data. On GitHub, open the repo → Settings → scroll down → <i>Change visibility</i> → Private.</div>` : ""}
+      <label class="check"><input type="checkbox" id="gh-auto" data-action="gh-auto" ${sync.auto ? "checked" : ""}><span>Save automatically after each change</span></label>
+      <div class="row2"><button class="btn btn-primary" data-action="gh-sync">Sync now</button><a class="btn center" href="${esc(fileUrl)}" target="_blank" rel="noopener">Open data file</a></div>
+      <p class="small" id="sync-msg">${esc(syncMessage())}</p>
+      <p class="small muted">On another phone or computer, open the app, go to Data and connect with the same repo name and token. Your data will load there.</p>
+      <button class="link danger" data-action="gh-disconnect">Disconnect on this device</button>`);
+  }
+  return section("☁ Cloud save (GitHub)", `
+    <p class="small">Right now your data is saved <b>only on this phone</b>. Connect your GitHub account (it's free) and everything is saved to a JSON file in <b>your own private repository</b>. It's saved automatically and loads on any device.</p>
+    <ol class="steps">
+      <li><b>Create a private repository</b> for your data.<br>
+        <a class="btn small-btn" href="https://github.com/new?name=reptrack-data&visibility=private&description=My%20RepTrack%20progress%20data" target="_blank" rel="noopener">1 · Create repo on GitHub ↗</a>
+        <span class="small muted">Keep the name <code>reptrack-data</code> and <b>Private</b>, then tap <i>Create repository</i>.</span></li>
+      <li><b>Create an access key</b> that can only change that one repository.<br>
+        <a class="btn small-btn" href="https://github.com/settings/personal-access-tokens/new?name=RepTrack&description=RepTrack%20data%20sync&contents=write" target="_blank" rel="noopener">2 · Create key on GitHub ↗</a>
+        <span class="small muted">Set: <i>Expiration</i> → No expiration (or 1 year). <i>Repository access</i> → <b>Only select repositories</b> → <code>reptrack-data</code>. <i>Permissions</i> → Repository permissions → <b>Contents → Read and write</b>. Tap <i>Generate token</i>, then <b>copy</b> it.</span></li>
+      <li><b>Paste it here</b> and connect.</li>
+    </ol>
+    <label class="field"><span>Repository name</span><input id="gh-repo" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(sync.repo || "reptrack-data")}"></label>
+    <label class="field"><span>Access key (token)</span><input id="gh-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(sync.token)}" placeholder="github_pat_…"></label>
+    <button class="btn btn-primary full" data-action="gh-save">Connect &amp; save my data</button>
+    <p class="small" id="sync-msg">${esc(syncState.msg || "")}</p>
+    <details class="small"><summary>Advanced</summary>
+      <label class="field"><span>File path</span><input id="gh-path" autocapitalize="off" spellcheck="false" value="${esc(sync.path)}"></label>
+      <label class="field"><span>Branch (blank = default)</span><input id="gh-branch" autocapitalize="off" spellcheck="false" value="${esc(sync.branch)}" placeholder="main"></label>
+    </details>
+    <p class="small muted">Your key is stored only in this browser. It is never put in the data file or sent anywhere except GitHub.</p>`);
+}
+
 /* ---------- SETTINGS ---------- */
 function renderSettings() {
   const p = data.profile;
   const nDays = Object.keys(data.days).length;
   return `
+  ${renderCloud()}
   ${section("Profile", `
     <div class="row3">
       <label class="field"><span>Start kg</span><input inputmode="decimal" data-profile="startWeight" value="${esc(p.startWeight)}"></label>
       <label class="field"><span>Target kg</span><input inputmode="decimal" data-profile="targetWeight" value="${esc(p.targetWeight)}"></label>
       <label class="field"><span>Height cm</span><input inputmode="decimal" data-profile="height" value="${esc(p.height)}"></label>
     </div>`)}
-  ${section("Save to a file on GitHub", `
-    <p class="small">Your data is always saved on this phone. Connect GitHub to also save it to a JSON file in a repository — then it's backed up and the same on every device.</p>
-    <details class="small"><summary>How to set up (2 minutes)</summary><ol>
-      <li>Create a <b>private</b> repository on GitHub, e.g. <code>reptrack-data</code> (keeps your health data private).</li>
-      <li>Go to GitHub → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
-      <li>Repository access: <i>Only select repositories</i> → pick that repo. Permissions → Repository → <b>Contents: Read and write</b>.</li>
-      <li>Paste the token and repo name below and tap <b>Save &amp; sync</b>.</li></ol>
-      <p>The token is stored only in this browser and is never put in the data file.</p></details>
-    <label class="field"><span>Repository (owner/name)</span><input id="gh-repo" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(sync.repo)}" placeholder="yourname/reptrack-data"></label>
-    <label class="field"><span>File path</span><input id="gh-path" autocapitalize="off" spellcheck="false" value="${esc(sync.path)}"></label>
-    <label class="field"><span>Branch (blank = default)</span><input id="gh-branch" autocapitalize="off" spellcheck="false" value="${esc(sync.branch)}" placeholder="main"></label>
-    <label class="field"><span>Access token</span><input id="gh-token" type="password" autocomplete="off" value="${esc(sync.token)}" placeholder="github_pat_…"></label>
-    <label class="check"><input type="checkbox" id="gh-auto" ${sync.auto ? "checked" : ""}><span>Sync automatically after each change</span></label>
-    <div class="row2"><button class="btn btn-primary" data-action="gh-save">Save &amp; sync</button><button class="btn" data-action="gh-sync" ${S.syncConfigured(sync) ? "" : "disabled"}>Sync now</button></div>
-    <p class="small" id="sync-msg">${esc(syncMessage())}</p>
-    ${S.syncConfigured(sync) ? `<button class="link danger" data-action="gh-disconnect">Disconnect GitHub</button>` : ""}`)}
   ${section("Backup file", `
     <p class="small">${nDays} day${nDays === 1 ? "" : "s"} logged. Download a backup file you can keep in Files / Drive, or restore from one.</p>
     <div class="row2"><button class="btn" data-action="export">Download backup</button><button class="btn" data-action="import">Restore backup</button></div>
@@ -796,18 +816,8 @@ document.addEventListener("click", (ev) => {
     }
     case "del-weight": editDay(t.dataset.k, (d) => { delete d.weight; }); rerender(); break;
     case "shop-clear": data.shopping = { items: {}, _t: Date.now() }; persist(); rerender(); break;
-    case "gh-save": {
-      sync = {
-        repo: $("#gh-repo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/$/, ""),
-        path: $("#gh-path").value.trim().replace(/^\//, "") || "data/reptrack-data.json",
-        branch: $("#gh-branch").value.trim(),
-        token: $("#gh-token").value.trim(),
-        auto: $("#gh-auto").checked,
-      };
-      S.saveSyncSettings(sync);
-      if (!S.syncConfigured(sync)) { syncState.msg = "Enter repository as owner/name and a token."; renderSyncBadge(); break; }
-      syncState.msg = "Syncing…"; rerender(); syncNow(); break;
-    }
+    case "gh-save": connectGitHub(); break;
+    case "gh-auto": sync.auto = t.checked; S.saveSyncSettings(sync); break;
     case "gh-sync": syncNow(); break;
     case "gh-disconnect":
       if (confirm("Disconnect GitHub on this device? Your data stays on the phone and in the GitHub file.")) {
@@ -885,6 +895,30 @@ function editField(t) {
   else e[f] = t.value;
   touchPlan();
 }
+async function connectGitHub() {
+  const msg = (m) => { syncState.msg = m; const el = $("#sync-msg"); if (el) el.textContent = m; };
+  let repo = $("#gh-repo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  const token = $("#gh-token").value.trim();
+  const path = ($("#gh-path")?.value.trim().replace(/^\//, "")) || "data/reptrack-data.json";
+  const branch = $("#gh-branch")?.value.trim() || "";
+  if (!token) return msg("Paste your access key (token) first.");
+  if (!repo) return msg("Enter the repository name.");
+  msg("Checking your GitHub account…");
+  try {
+    if (!repo.includes("/")) repo = `${await S.githubLogin(token)}/${repo}`;
+    const info = await S.githubRepo(token, repo);
+    sync = { repo, path, branch, token, auto: true };
+    S.saveSyncSettings(sync);
+    syncState.publicRepo = !info.private;
+    syncState.msg = "Connected — saving your data…";
+    rerender();
+    await syncNow();
+    if (syncState.status === "ok") toast("Connected ✓ your data is saved to GitHub");
+  } catch (e) {
+    msg("⚠ " + e.message);
+  }
+}
+
 function exportData() {
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -919,7 +953,10 @@ function toast(msg) {
 // first run: if never edited, set start date
 if (!data.profile.startDate) { data.profile.startDate = todayKey(); S.saveLocal(data); }
 render();
-if (S.syncConfigured(sync)) syncNow();
+if (S.syncConfigured(sync)) {
+  syncNow();
+  S.githubRepo(sync.token, sync.repo).then((r) => { syncState.publicRepo = !r.private; if (tab === "settings" && !isTyping()) rerender(); }).catch(() => {});
+}
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     if (isTyping()) document.activeElement.blur();
