@@ -1,6 +1,6 @@
 // Offline support. Network-first: when online you always get the latest version
 // from GitHub Pages; the cached copy is only used when offline.
-const CACHE = "reptrack-v3";
+const CACHE = "reptrack-v4";
 const ASSETS = ["./", "index.html", "css/styles.css", "js/app.js", "js/plan.js", "js/store.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

@@ -276,7 +276,7 @@ function renderHabits(k) {
   const day = getDay(k);
   return section("Body & recovery", `
     <div class="row3">
-      <label class="field"><span>Morning weight (kg)</span><input inputmode="decimal" data-field="weight" value="${esc(day.weight ?? "")}" placeholder="${esc(latestWeight()?.w ?? PLAN.profileDefaults.startWeight)}"></label>
+      <label class="field"><span>Weight (kg)</span><input inputmode="decimal" data-field="weight" value="${esc(day.weight ?? "")}" placeholder="${esc(latestWeight()?.w ?? PLAN.profileDefaults.startWeight)}"></label>
       <label class="field"><span>Sleep (h)</span><input inputmode="decimal" data-field="sleep" value="${esc(day.sleep ?? "")}" placeholder="8"></label>
       <label class="field"><span>Water (glasses)</span>
         <div class="stepper"><button data-action="water" data-d="-1">−</button><b id="water-val">${day.water || 0}</b><button data-action="water" data-d="1">+</button></div></label>
@@ -335,10 +335,10 @@ function renderProgress() {
       })
     : `<p class="muted">No weights yet. Add your morning weight below or on the Today tab.</p>`;
 
-  const wForm = `<div class="row2 inline">
+  const wForm = `<div class="weight-form"><div class="row2">
       <label class="field"><span>Date</span><input type="date" id="w-date" value="${todayKey()}" max="${todayKey()}"></label>
       <label class="field"><span>Weight kg</span><input inputmode="decimal" id="w-val" placeholder="${esc(latest?.w ?? startW)}"></label>
-    </div><button class="btn btn-primary full" data-action="add-weight">Save weight</button>`;
+    </div><button class="btn btn-primary full" data-action="add-weight">Save weight</button></div>`;
 
   const recent = weightEntries().slice(-10).reverse().map((e) => `<tr><td>${fmtDate(e.k, { weekday: "short", day: "numeric", month: "short" })}</td><td>${e.w} kg</td><td><button class="link danger" data-action="del-weight" data-k="${e.k}">delete</button></td></tr>`).join("");
 
@@ -431,7 +431,7 @@ function renderExerciseProgress() {
     `<optgroup label="${esc(w.name)}">${w.exercises.map((e) => `<option value="${e.id}" ${e.id === progressEx ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</optgroup>`).join("");
   const ex = exById(progressEx);
   const hist = exerciseHistory(progressEx);
-  const useReps = ex.bodyweight && hist.every((h) => h.best === 0);
+  const useReps = hist.every((h) => h.best === 0);
   let chart = `<p class="muted">No sessions logged for this exercise yet.</p>`;
   if (hist.length) {
     chart = lineChart({
@@ -458,15 +458,19 @@ function lineChart({ series, target, xLabel }) {
   let yMin = Math.min(...ys), yMax = Math.max(...ys);
   if (yMax - yMin < 1) { yMin -= 0.5; yMax += 0.5; }
   const pad = (yMax - yMin) * 0.1; yMin -= pad; yMax += pad;
-  const xMax = Math.max(1, ...all.map((p) => p.x));
-  const sx = (x) => P.l + (x / xMax) * (W - P.l - P.r);
+  if (ys.every((y) => y >= 0)) yMin = Math.max(0, yMin);
+  const xMax = Math.max(...all.map((p) => p.x));
+  const single = xMax === 0;
+  const sx = (x) => single ? (P.l + W - P.r) / 2 : P.l + (x / xMax) * (W - P.l - P.r);
   const sy = (y) => P.t + (1 - (y - yMin) / (yMax - yMin)) * (H - P.t - P.b);
   let g = "";
   for (let i = 0; i <= 3; i++) {
     const y = yMin + ((yMax - yMin) * i) / 3;
     g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(y)}" y2="${sy(y)}" class="grid"/><text x="${P.l - 4}" y="${sy(y) + 3}" class="axis" text-anchor="end">${fmtNum(y)}</text>`;
   }
-  g += `<text x="${P.l}" y="${H - 6}" class="axis">${esc(xLabel(0))}</text><text x="${W - P.r}" y="${H - 6}" class="axis" text-anchor="end">${esc(xLabel(xMax))}</text>`;
+  g += single
+    ? `<text x="${sx(0)}" y="${H - 6}" class="axis" text-anchor="middle">${esc(xLabel(0))}</text>`
+    : `<text x="${P.l}" y="${H - 6}" class="axis">${esc(xLabel(0))}</text><text x="${W - P.r}" y="${H - 6}" class="axis" text-anchor="end">${esc(xLabel(xMax))}</text>`;
   if (target != null) g += `<line x1="${P.l}" x2="${W - P.r}" y1="${sy(target)}" y2="${sy(target)}" class="target"/>`;
   for (const s of series) {
     if (s.line && s.pts.length > 1) g += `<polyline class="${s.cls}" fill="none" points="${s.pts.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ")}"/>`;
@@ -619,6 +623,11 @@ function renderSettings() {
     <p class="small">${nDays} day${nDays === 1 ? "" : "s"} logged. Download a backup file you can keep in Files / Drive, or restore from one.</p>
     <div class="row2"><button class="btn" data-action="export">Download backup</button><button class="btn" data-action="import">Restore backup</button></div>
     <input type="file" id="import-file" accept="application/json,.json" hidden>`)}
+  ${section("Rest timer", `
+    <div class="field"><span>Default rest between sets</span><div class="seg">${[60, 90, 120, 180].map((v) => `<button class="${prefs.rest === v ? "on" : ""}" data-action="pref-rest" data-v="${v}">${v < 120 ? v + "s" : v / 60 + " min"}</button>`).join("")}</div></div>
+    <label class="check"><input type="checkbox" data-action="pref-sound" ${prefs.sound ? "checked" : ""}><span>Sound when rest is over (beeps at 3-2-1, alarm at 0)</span></label>
+    <button class="btn full" data-action="test-sound">🔊 Test sound</button>
+    <p class="small muted">The screen stays on while the timer runs. iPhone: the ring/silent switch must be on ring for sound.</p>`)}
   ${section("Install on your phone", `<p class="small"><b>iPhone (Safari):</b> Share → <i>Add to Home Screen</i>.<br><b>Android (Chrome):</b> ⋮ menu → <i>Add to Home screen</i> / <i>Install app</i>.<br>It then opens full-screen and works offline.</p>`)}
   ${section("Danger zone", `<button class="btn danger" data-action="reset">Erase all data on this device</button>`)}
   <p class="muted small center">RepTrack · ${esc(PLAN.disclaimer)}</p>`;
@@ -686,32 +695,81 @@ async function syncNow() {
 function isTyping() { const a = document.activeElement; return a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA"); }
 
 /* ================= events ================= */
-let restTimer = null;
-function startRest(sec = 90) {
+/* ---- rest timer: beeps on 3-2-1 and a longer alarm at 0, keeps the screen on ---- */
+let restTimer = null, wakeLock = null, audioCtx = null;
+const prefs = (() => { try { return { rest: 90, sound: true, ...JSON.parse(localStorage.getItem("reptrack.prefs") || "{}") }; } catch { return { rest: 90, sound: true }; } })();
+function savePrefs() { try { localStorage.setItem("reptrack.prefs", JSON.stringify(prefs)); } catch {} }
+
+// Must be called from a tap so iPhone allows audio later
+function unlockAudio() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = "transient"; // plays over music briefly, iOS 16.4+
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(); // silent blip to unlock
+    g.gain.value = 0; o.connect(g).connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.01);
+  } catch {}
+}
+function beep(freq = 880, dur = 0.15, when = 0, vol = 0.6) {
+  if (!prefs.sound || !audioCtx) return;
+  try {
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t0 = audioCtx.currentTime + when, o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "square"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(audioCtx.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch {}
+}
+function finishSound() { [0, 0.25, 0.5].forEach((w) => beep(1320, 0.18, w)); beep(1760, 0.5, 0.8); }
+async function keepScreenOn(on) {
+  try {
+    if (on && "wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => (wakeLock = null)); }
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch {}
+}
+function stopRest() {
+  clearInterval(restTimer); restTimer = null;
+  $("#rest").hidden = true; $("#rest").classList.remove("finished");
+  document.body.classList.remove("timer-on");
+  keepScreenOn(false);
+}
+function startRest(sec = prefs.rest) {
   const el = $("#rest");
-  let end = Date.now() + sec * 1000;
-  el.hidden = false;
+  let end = Date.now() + sec * 1000, lastLeft = null;
+  unlockAudio();
+  keepScreenOn(true);
+  el.hidden = false; el.classList.remove("finished");
+  document.body.classList.add("timer-on");
   clearInterval(restTimer);
   const tick = () => {
-    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+    if (left !== lastLeft && left > 0 && left <= 3 && lastLeft !== null) beep(880, 0.12);
+    lastLeft = left;
     $("#rest-time").textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
     if (left <= 0) {
-      clearInterval(restTimer);
-      $("#rest-time").textContent = "Go!";
-      try { navigator.vibrate?.([200, 100, 200]); } catch {}
-      setTimeout(() => (el.hidden = true), 4000);
+      clearInterval(restTimer); restTimer = null;
+      $("#rest-time").textContent = "Go! 💪";
+      el.classList.add("finished");
+      finishSound();
+      try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch {}
+      keepScreenOn(false);
+      setTimeout(() => { if (!restTimer) stopRest(); }, 6000);
     }
   };
   el.onclick = (ev) => {
     const a = ev.target.closest("[data-rest]")?.dataset.rest;
     if (!a) return;
-    if (a === "stop") { clearInterval(restTimer); el.hidden = true; return; }
-    end += parseInt(a, 10) * 1000;
+    if (a === "stop") return stopRest();
+    if (!restTimer) return;
+    end = Math.max(Date.now() + 1000, end + parseInt(a, 10) * 1000);
     tick();
   };
   tick();
-  restTimer = setInterval(tick, 500);
+  restTimer = setInterval(tick, 250);
 }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && restTimer) keepScreenOn(true); });
 
 document.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-action], .tabbar button");
@@ -793,7 +851,7 @@ document.addEventListener("click", (ev) => {
         nowDone = s.done;
       });
       rerender();
-      if (nowDone) startRest(90);
+      if (nowDone) startRest();
       break;
     }
     case "add-set": case "del-set": {
@@ -817,6 +875,9 @@ document.addEventListener("click", (ev) => {
     case "del-weight": editDay(t.dataset.k, (d) => { delete d.weight; }); rerender(); break;
     case "shop-clear": data.shopping = { items: {}, _t: Date.now() }; persist(); rerender(); break;
     case "gh-save": connectGitHub(); break;
+    case "pref-rest": prefs.rest = +t.dataset.v; savePrefs(); rerender(); toast(`Rest timer: ${t.textContent}`); break;
+    case "pref-sound": prefs.sound = t.checked; savePrefs(); break;
+    case "test-sound": unlockAudio(); setTimeout(finishSound, 50); break;
     case "gh-auto": sync.auto = t.checked; S.saveSyncSettings(sync); break;
     case "gh-sync": syncNow(); break;
     case "gh-disconnect":
