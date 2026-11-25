@@ -8,6 +8,7 @@ A mobile-first web app for following a 3-day muscle-gain plan (workouts, supplem
 
 - **Today**: shows the day's workout (Mon Push / Wed Pull / Fri Legs, other days are rest days). You can switch it if you train on a different day.
   - Warm-up checklist, including the shoulder warm-up.
+  - **▶ How to do it**: every exercise has a tutorial video link. It opens a YouTube search for that exercise's proper form, or your own link if you set one.
   - Log weight and reps for each set. Your previous session is shown as a hint, and tapping ✓ fills it in.
   - A rest timer starts automatically after each set.
   - A "⬆ increase the load" hint appears when you hit the top of the rep range on every set last time.
@@ -20,6 +21,13 @@ A mobile-first web app for following a 3-day muscle-gain plan (workouts, supplem
   - Automatic calorie advice using the plan's rule: add 150–200 kcal if the weekly average doesn't rise for 2 weeks.
   - Weekly consistency stats and a 5-week calendar.
   - A progress chart and history for each exercise.
+- **Edit workouts** (Plan → *Add, edit or delete workouts*):
+  - Add new workout types, such as Cardio or Upper body, or delete workouts.
+  - Choose which days of the week each workout is on.
+  - Add, delete or reorder exercises and change their sets, rep range, unit (reps / sec / min / each side) and type (weights / bodyweight / assisted).
+  - Set your own tutorial link for an exercise.
+  - Deleting something keeps your logged history, and you can reset to the original plan at any time.
+  - Your edited workouts are saved and synced together with your data.
 - **Plan**: the full document in collapsible sections (workouts, how to train, recovery, food plan, recipes, a shopping list you can tick off, supplements, weight tracking, suggestions).
 - **Data**:
   - Profile (start, target, height).
@@ -42,7 +50,7 @@ A mobile-first web app for following a 3-day muscle-gain plan (workouts, supplem
 
 ## Changing the plan
 
-All exercises, meals, supplements and texts are in [`js/plan.js`](js/plan.js). Edit that file and push, and the app updates. Your logged data is separate and isn't affected.
+The easiest way to change your workouts is in the app: **Plan → Add, edit or delete workouts**. The original plan (exercises, meals, supplements and texts) is in [`js/plan.js`](js/plan.js). Your logged data is separate and isn't affected by changes to it.
 
 ## Run locally
 

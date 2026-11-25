@@ -12,6 +12,7 @@ export function emptyData(profileDefaults) {
     profile: { ...profileDefaults, _t: 0 },
     days: {}, // "YYYY-MM-DD" -> day record
     shopping: { items: {}, _t: 0 },
+    plan: null, // your edited workouts (null = use the original plan)
   };
 }
 
@@ -35,6 +36,7 @@ function normalise(d, profileDefaults) {
     ...d,
     profile: { ...base.profile, ...(d.profile || {}) },
     shopping: { ...base.shopping, ...(d.shopping || {}) },
+    plan: d.plan || null,
     days: d.days || {},
   };
 }
@@ -62,6 +64,7 @@ export function merge(a, b, profileDefaults) {
     updatedAt: Math.max(a.updatedAt || 0, b.updatedAt || 0),
     profile: (b.profile._t || 0) > (a.profile._t || 0) ? b.profile : a.profile,
     shopping: (b.shopping._t || 0) > (a.shopping._t || 0) ? b.shopping : a.shopping,
+    plan: ((b.plan?._t || 0) > (a.plan?._t || 0) ? b.plan : a.plan) || null,
     days,
   };
 }

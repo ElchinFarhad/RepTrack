@@ -1,5 +1,5 @@
 // Offline support: serve the app from cache, refresh it in the background.
-const CACHE = "reptrack-v1";
+const CACHE = "reptrack-v2";
 const ASSETS = ["./", "index.html", "css/styles.css", "js/app.js", "js/plan.js", "js/store.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

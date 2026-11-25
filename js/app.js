@@ -41,19 +41,29 @@ function persist() {
   S.saveLocal(data);
   scheduleSync();
 }
-function plannedType(k) { return PLAN.schedule[fromKey(k).getDay()] || "rest"; }
-function dayType(k) { return getDay(k).type || plannedType(k); }
+/* ---- workouts: your edited copy (data.plan) or the original plan ---- */
+function workouts() { return (data.plan || PLAN).workouts; }
+function schedule() { return (data.plan || PLAN).schedule; }
+function editablePlan() {
+  if (!data.plan) data.plan = JSON.parse(JSON.stringify({ workouts: PLAN.workouts, schedule: PLAN.schedule, archive: {} }));
+  data.plan.archive ||= {};
+  return data.plan;
+}
+function touchPlan() { data.plan._t = Date.now(); persist(); }
+function exById(id) {
+  for (const w of Object.values(workouts())) { const e = w.exercises.find((x) => x.id === id); if (e) return e; }
+  return data.plan?.archive?.[id] || null;
+}
+function tutorialUrl(e) {
+  return e.video || `https://www.youtube.com/results?search_query=${encodeURIComponent(e.name + " exercise proper form tutorial")}`;
+}
+function plannedType(k) { const t = schedule()[fromKey(k).getDay()]; return t && workouts()[t] ? t : "rest"; }
+function dayType(k) { const t = getDay(k).type; return t && (t === "rest" || workouts()[t]) ? t : plannedType(k); }
 
 function num(v) { const n = parseFloat(String(v).replace(",", ".")); return isFinite(n) ? n : null; }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function fmtNum(n, d = 1) { return n == null ? "—" : (Math.round(n * 10 ** d) / 10 ** d).toString(); }
 
-function allExercises() {
-  const out = [];
-  for (const [wid, w] of Object.entries(PLAN.workouts)) for (const e of w.exercises) out.push({ ...e, workout: wid });
-  return out;
-}
-const EX = Object.fromEntries(allExercises().map((e) => [e.id, e]));
 
 function setHasData(s) { return s && (s.done || num(s.w) != null || num(s.r) != null); }
 
@@ -88,8 +98,8 @@ function dayNutrition(day) {
 
 function workoutProgress(k) {
   const day = getDay(k), type = dayType(k);
-  if (type === "rest") return null;
-  const exs = PLAN.workouts[type].exercises;
+  if (type === "rest" || !workouts()[type].exercises.length) return null;
+  const exs = workouts()[type].exercises;
   let done = 0, total = 0;
   for (const e of exs) {
     total += e.sets;
@@ -110,16 +120,23 @@ function trainedOn(k) {
 
 /* ================= rendering ================= */
 function render() {
-  document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === (tab === "edit" ? "plan" : tab)));
   const scroll = window.scrollY;
   if (tab === "today") app.innerHTML = renderToday();
   else if (tab === "progress") app.innerHTML = renderProgress();
   else if (tab === "plan") app.innerHTML = renderPlan();
+  else if (tab === "edit") app.innerHTML = renderEditor();
   else app.innerHTML = renderSettings();
   renderSyncBadge();
   return scroll;
 }
-function rerender() { const y = window.scrollY; render(); window.scrollTo(0, y); }
+function rerender() {
+  const y = window.scrollY;
+  const open = [...document.querySelectorAll(".ed-ex")].filter((el) => el.querySelector(".ed-more[open]")).map((el) => el.querySelector(".ed-name")?.dataset.e);
+  render();
+  for (const id of open) document.querySelector(`.ed-name[data-e="${id}"]`)?.closest(".ed-ex")?.querySelector(".ed-more")?.setAttribute("open", "");
+  window.scrollTo(0, y);
+}
 
 function section(title, body, extra = "", id = "") {
   return `<section class="card" ${id ? `id="${id}"` : ""}><div class="card-h"><h2>${title}</h2>${extra}</div>${body}</section>`;
@@ -129,8 +146,8 @@ function section(title, body, extra = "", id = "") {
 function renderToday() {
   const k = curDate, day = getDay(k), type = dayType(k);
   const isToday = k === todayKey();
-  const chips = ["push", "pull", "legs", "rest"].map((t) =>
-    `<button class="chip ${type === t ? "on" : ""}" data-action="set-type" data-type="${t}">${t === "rest" ? "Rest" : PLAN.workouts[t].name}${plannedType(k) === t ? '<span class="dot"></span>' : ""}</button>`
+  const chips = [...Object.keys(workouts()), "rest"].map((t) =>
+    `<button class="chip ${type === t ? "on" : ""}" data-action="set-type" data-type="${t}">${t === "rest" ? "Rest" : esc(workouts()[t].name)}${plannedType(k) === t ? '<span class="dot"></span>' : ""}</button>`
   ).join("");
 
   let html = `
@@ -176,11 +193,12 @@ function renderSummary(k) {
 }
 
 function renderWorkout(k, type) {
-  const w = PLAN.workouts[type], day = getDay(k);
+  const w = workouts()[type], day = getDay(k);
   const warm = PLAN.warmup.map((t, i) => `<label class="check"><input type="checkbox" data-action="warmup" data-i="${i}" ${day.warmup?.[i] ? "checked" : ""}><span>${esc(t)}</span></label>`).join("");
   const exHtml = w.exercises.map((e) => renderExercise(k, e)).join("");
   const done = isWorkoutDone(k);
-  return section(`${w.name} <span class="muted small">${w.focus}</span>`,
+  if (!w.exercises.length) return section(esc(w.name), `<p class="muted">No exercises in this workout yet.</p><button class="btn btn-primary full" data-action="edit-open">Add exercises</button>`);
+  return section(`${esc(w.name)} <span class="muted small">${esc(w.focus || "")}</span>`,
     `<details class="warmup" ${Object.keys(day.warmup || {}).length < PLAN.warmup.length ? "open" : ""}><summary>Warm-up</summary>${warm}</details>
      ${exHtml}
      <label class="field"><span>Workout notes</span><textarea data-field="workoutNotes" rows="2" placeholder="How did it feel? Shoulder OK?">${esc(day.workoutNotes || "")}</textarea></label>
@@ -217,7 +235,7 @@ function renderExercise(k, e) {
   return `<div class="exercise ${doneCount >= e.sets ? "complete" : ""}">
     <div class="ex-h">
       <div><div class="ex-name">${esc(e.name)}${e.shoulder ? ' <span class="tag warn" title="Check with your shoulder specialist">shoulder</span>' : ""}</div>
-      <div class="ex-target">${e.sets} × ${range} ${e.unit}</div></div>
+      <div class="ex-target">${e.sets} × ${range} ${e.unit} · <a class="howto" href="${esc(tutorialUrl(e))}" target="_blank" rel="noopener">▶ How to do it</a></div></div>
       <div class="ex-count">${doneCount}/${e.sets}</div>
     </div>
     <div class="ex-last">${esc(lastTxt)}</div>
@@ -405,9 +423,13 @@ function exerciseHistory(id) {
 }
 
 function renderExerciseProgress() {
-  const opts = Object.entries(PLAN.workouts).map(([, w]) =>
-    `<optgroup label="${w.name}">${w.exercises.map((e) => `<option value="${e.id}" ${e.id === progressEx ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</optgroup>`).join("");
-  const ex = EX[progressEx];
+  const removed = Object.values(data.plan?.archive || {}).filter((e) => exerciseHistory(e.id).length && !Object.values(workouts()).some((w) => w.exercises.some((x) => x.id === e.id)));
+  const groups = [...Object.values(workouts()).filter((w) => w.exercises.length), ...(removed.length ? [{ name: "Removed exercises", exercises: removed }] : [])];
+  if (!exById(progressEx) && groups.length) progressEx = groups[0].exercises[0].id;
+  if (!groups.length) return section("Exercise progress", `<p class="muted">No exercises yet.</p>`);
+  const opts = groups.map((w) =>
+    `<optgroup label="${esc(w.name)}">${w.exercises.map((e) => `<option value="${e.id}" ${e.id === progressEx ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</optgroup>`).join("");
+  const ex = exById(progressEx);
   const hist = exerciseHistory(progressEx);
   const useReps = ex.bodyweight && hist.every((h) => h.best === 0);
   let chart = `<p class="muted">No sessions logged for this exercise yet.</p>`;
@@ -458,13 +480,15 @@ function renderPlan() {
   const p = PLAN;
   const list = (arr) => `<ul>${arr.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`;
   const sched = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => {
-    const t = p.schedule[(i + 1) % 7];
-    return `<div class="sched-d ${t ? "train" : ""}"><b>${d}</b><span>${t ? p.workouts[t].name : "Rest"}</span></div>`;
+    const t = schedule()[(i + 1) % 7];
+    const w = t && workouts()[t];
+    return `<div class="sched-d ${w ? "train" : ""}"><b>${d}</b><span>${w ? esc(w.name) : "Rest"}</span></div>`;
   }).join("");
-  const workouts = Object.values(p.workouts).map((w) => `
-    <h3>${w.name} <span class="muted small">${w.focus}</span></h3>
-    <table class="tbl"><tr><th>Exercise</th><th>Sets</th><th>Reps</th></tr>
-    ${w.exercises.map((e) => `<tr><td>${esc(e.name)}</td><td>${e.sets}</td><td>${e.min === e.max ? e.min : e.min + "–" + e.max} ${e.unit === "reps" ? "" : e.unit}</td></tr>`).join("")}</table>`).join("");
+  const wkHtml = Object.values(workouts()).map((w) => `
+    <h3>${esc(w.name)} <span class="muted small">${esc(w.focus || "")}</span></h3>
+    ${w.exercises.length ? `<table class="tbl"><tr><th>Exercise</th><th>Sets</th><th>Reps</th></tr>
+    ${w.exercises.map((e) => `<tr><td>${esc(e.name)} <a class="howto" href="${esc(tutorialUrl(e))}" target="_blank" rel="noopener" aria-label="How to do ${esc(e.name)}">▶</a></td><td>${e.sets}</td><td>${e.min === e.max ? e.min : e.min + "–" + e.max} ${e.unit === "reps" ? "" : e.unit}</td></tr>`).join("")}</table>` : `<p class="muted small">No exercises yet.</p>`}`).join("")
+    + `<button class="btn btn-primary full" data-action="edit-open">✎ Add, edit or delete workouts</button>`;
   const shop = Object.entries(p.shopping).map(([cat, items]) => `<h3>${cat}</h3>${items.map((it) => `
     <label class="check"><input type="checkbox" data-action="shop" data-id="${esc(it)}" ${data.shopping.items[it] ? "checked" : ""}><span>${esc(it)}</span></label>`).join("")}`).join("");
 
@@ -477,7 +501,7 @@ function renderPlan() {
     <div class="stat"><div class="stat-v">${data.profile.height}</div><div class="stat-l">height cm</div></div></div>
     <div class="sched">${sched}</div></section>
   ${p.safetyNotes.map((n) => `<div class="advice warn"><b>${esc(n.title)}:</b> ${esc(n.text)}</div>`).join("")}
-  ${det("Workouts", workouts, true)}
+  ${det("Workouts", wkHtml, true)}
   ${det("How to train", list(p.howToTrain) + `<h3>Warm-up</h3>` + list(p.warmup))}
   ${det("Recovery", `<table class="tbl">${p.recovery.map((r) => `<tr><td><b>${r.habit}</b></td><td>${esc(r.target)}</td></tr>`).join("")}</table>`)}
   ${det("Daily food plan", `
@@ -493,6 +517,55 @@ function renderPlan() {
   ${det("How to track your weight", list(p.weightTracking))}
   ${det("Suggestions", `<ol>${p.suggestions.map((t) => `<li>${esc(t)}</li>`).join("")}</ol><p class="small">${esc(p.keepConsistent)}</p>`)}
   <p class="muted small center">${esc(p.disclaimer)}</p>`;
+}
+
+/* ---------- WORKOUT EDITOR ---------- */
+const DAYS = [["Mon", 1], ["Tue", 2], ["Wed", 3], ["Thu", 4], ["Fri", 5], ["Sat", 6], ["Sun", 0]];
+function exKind(e) { return e.assisted ? "assisted" : e.bodyweight ? "bodyweight" : "weights"; }
+function renderEditor() {
+  const ws = workouts(), sch = schedule();
+  const wHtml = Object.entries(ws).map(([wid, w]) => {
+    const days = DAYS.map(([lbl, n]) => `<button class="daybtn ${sch[n] === wid ? "on" : ""}" data-action="w-day" data-w="${wid}" data-day="${n}">${lbl}</button>`).join("");
+    const exs = w.exercises.map((e, i) => `
+      <div class="ed-ex">
+        <div class="ed-row">
+          <input class="ed-name" data-ef="name" data-w="${wid}" data-e="${e.id}" value="${esc(e.name)}" aria-label="Exercise name">
+          <button class="mini" data-action="e-move" data-d="-1" data-w="${wid}" data-e="${e.id}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+          <button class="mini" data-action="e-move" data-d="1" data-w="${wid}" data-e="${e.id}" ${i === w.exercises.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+          <button class="mini danger" data-action="e-del" data-w="${wid}" data-e="${e.id}" aria-label="Delete exercise">✕</button>
+        </div>
+        <details class="ed-more"><summary>${e.sets} × ${e.min === e.max ? e.min : e.min + "–" + e.max} ${esc(e.unit)} · ${{ weights: "weights", bodyweight: "bodyweight", assisted: "assisted" }[exKind(e)]}${e.video ? " · custom link" : ""} <span class="ed-edit">✎ edit</span></summary>
+        <div class="ed-grid">
+          <label class="field"><span>Sets</span><input inputmode="numeric" data-ef="sets" data-w="${wid}" data-e="${e.id}" value="${e.sets}"></label>
+          <label class="field"><span>Min</span><input inputmode="numeric" data-ef="min" data-w="${wid}" data-e="${e.id}" value="${e.min}"></label>
+          <label class="field"><span>Max</span><input inputmode="numeric" data-ef="max" data-w="${wid}" data-e="${e.id}" value="${e.max}"></label>
+          <label class="field"><span>Unit</span><select class="select" data-ef="unit" data-w="${wid}" data-e="${e.id}">
+            ${["reps", "sec", "min", "each side"].map((u) => `<option ${e.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+        </div>
+        <div class="ed-grid2">
+          <label class="field"><span>Type</span><select class="select" data-ef="kind" data-w="${wid}" data-e="${e.id}">
+            ${[["weights", "Weights (kg)"], ["bodyweight", "Bodyweight (+kg)"], ["assisted", "Assisted (kg help)"]].map(([v, l]) => `<option value="${v}" ${exKind(e) === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <label class="field"><span>Tutorial link (optional)</span><input type="url" data-ef="video" data-w="${wid}" data-e="${e.id}" value="${esc(e.video || "")}" placeholder="YouTube search if empty" autocapitalize="off"></label>
+        </div>
+        <label class="check small"><input type="checkbox" data-ef="shoulder" data-w="${wid}" data-e="${e.id}" ${e.shoulder ? "checked" : ""}><span>Shoulder caution tag</span></label>
+        </details>
+      </div>`).join("");
+    return `<section class="card" id="w-${wid}">
+      <label class="field"><span>Workout name</span><input class="ed-wname" data-wf="name" data-w="${wid}" value="${esc(w.name)}"></label>
+      <label class="field"><span>Focus</span><input data-wf="focus" data-w="${wid}" value="${esc(w.focus || "")}" placeholder="e.g. Chest + Triceps"></label>
+      <div class="field"><span>Training days</span><div class="days">${days}</div></div>
+      ${exs || `<p class="muted small">No exercises yet.</p>`}
+      <button class="btn full" data-action="e-add" data-w="${wid}">+ Add exercise</button>
+      <button class="btn danger full mt" data-action="w-del" data-w="${wid}">Delete “${esc(w.name)}” workout</button>
+    </section>`;
+  }).join("");
+  return `
+  <div class="datebar"><button class="icon-btn" data-action="edit-close" aria-label="Back">‹</button><div class="date-mid"><div class="date-main">Edit workouts</div><div class="date-sub">Changes save automatically</div></div><span style="width:44px"></span></div>
+  ${wHtml || `<p class="muted center">No workouts. Add one below.</p>`}
+  <button class="btn btn-primary full" data-action="w-add">+ Add new workout</button>
+  <button class="btn full mt" data-action="edit-close">Done</button>
+  ${data.plan ? `<button class="link danger mt" data-action="plan-reset">Reset workouts to the original plan</button>` : ""}
+  <p class="muted small">Deleting a workout or exercise keeps your logged history.</p>`;
 }
 
 /* ---------- SETTINGS ---------- */
@@ -628,6 +701,55 @@ document.addEventListener("click", (ev) => {
   }
   const a = t.dataset.action, k = curDate;
   switch (a) {
+    case "edit-open": tab = "edit"; sessionSet("tab", tab); render(); window.scrollTo(0, 0); break;
+    case "edit-close": tab = "plan"; sessionSet("tab", tab); render(); window.scrollTo(0, 0); break;
+    case "w-add": {
+      const pl = editablePlan(), id = "w" + Date.now().toString(36);
+      pl.workouts[id] = { name: "New workout", focus: "", exercises: [] };
+      touchPlan(); render();
+      const el = document.getElementById("w-" + id); el?.scrollIntoView({ behavior: "smooth" }); el?.querySelector(".ed-wname")?.select();
+      break;
+    }
+    case "w-del": {
+      const pl = editablePlan(), w = pl.workouts[t.dataset.w];
+      if (!confirm(`Delete the “${w.name}” workout? Your logged history is kept.`)) break;
+      for (const e of w.exercises) pl.archive[e.id] = e;
+      delete pl.workouts[t.dataset.w];
+      for (const d of Object.keys(pl.schedule)) if (pl.schedule[d] === t.dataset.w) delete pl.schedule[d];
+      touchPlan(); rerender(); toast("Workout deleted"); break;
+    }
+    case "w-day": {
+      const pl = editablePlan(), d = t.dataset.day;
+      if (pl.schedule[d] === t.dataset.w) delete pl.schedule[d]; else pl.schedule[d] = t.dataset.w;
+      touchPlan(); rerender(); break;
+    }
+    case "e-add": {
+      const pl = editablePlan(), id = "x" + Date.now().toString(36);
+      pl.workouts[t.dataset.w].exercises.push({ id, name: "New exercise", sets: 3, min: 10, max: 12, unit: "reps" });
+      touchPlan(); rerender();
+      const inp = document.querySelector(`.ed-name[data-e="${id}"]`); inp?.closest(".ed-ex")?.querySelector("details")?.setAttribute("open", ""); inp?.scrollIntoView({ block: "center" }); inp?.select();
+      break;
+    }
+    case "e-del": {
+      const pl = editablePlan(), list = pl.workouts[t.dataset.w].exercises, i = list.findIndex((e) => e.id === t.dataset.e);
+      if (i < 0 || !confirm(`Delete “${list[i].name}”? Your logged history is kept.`)) break;
+      pl.archive[list[i].id] = list[i]; list.splice(i, 1);
+      touchPlan(); rerender(); break;
+    }
+    case "e-move": {
+      const pl = editablePlan(), list = pl.workouts[t.dataset.w].exercises, i = list.findIndex((e) => e.id === t.dataset.e), j = i + +t.dataset.d;
+      if (i < 0 || j < 0 || j >= list.length) break;
+      [list[i], list[j]] = [list[j], list[i]];
+      touchPlan(); rerender(); break;
+    }
+    case "plan-reset":
+      if (confirm("Reset all workouts to the original plan? Your logged history is kept.")) {
+        const archive = { ...(data.plan?.archive || {}) };
+        for (const w of Object.values(workouts())) for (const e of w.exercises) archive[e.id] = e;
+        data.plan = { ...JSON.parse(JSON.stringify({ workouts: PLAN.workouts, schedule: PLAN.schedule })), archive };
+        touchPlan(); rerender(); toast("Workouts reset");
+      }
+      break;
     case "date": curDate = addDays(curDate, +t.dataset.d); render(); break;
     case "go-today": ev.preventDefault(); curDate = todayKey(); render(); break;
     case "open-day": curDate = t.dataset.k; tab = "today"; sessionSet("tab", tab); render(); window.scrollTo(0, 0); break;
@@ -635,7 +757,7 @@ document.addEventListener("click", (ev) => {
       editDay(k, (d) => { if (t.dataset.type === plannedType(k)) delete d.type; else d.type = t.dataset.type; });
       rerender(); break;
     case "tick": {
-      const ex = EX[t.dataset.ex], i = +t.dataset.i;
+      const ex = exById(t.dataset.ex), i = +t.dataset.i;
       let nowDone = false;
       editDay(k, (d) => {
         d.ex ||= {};
@@ -655,7 +777,7 @@ document.addEventListener("click", (ev) => {
       break;
     }
     case "add-set": case "del-set": {
-      const ex = EX[t.dataset.ex];
+      const ex = exById(t.dataset.ex);
       editDay(k, (d) => {
         d.ex ||= {};
         const rec = (d.ex[ex.id] ||= { sets: Array.from({ length: ex.sets }, () => ({})) });
@@ -705,6 +827,7 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("change", (ev) => {
   const t = ev.target, k = curDate;
   const a = t.dataset.action;
+  if (t.dataset.ef && (t.type === "checkbox" || t.tagName === "SELECT")) { editField(t); return; }
   if (a === "warmup") editDay(k, (d) => { (d.warmup ||= {})[t.dataset.i] = t.checked; if (!t.checked) delete d.warmup[t.dataset.i]; });
   else if (a === "supp") { editDay(k, (d) => { (d.supp ||= {})[t.dataset.id] = t.checked; }); rerenderSoon(); }
   else if (a === "meal") { editDay(k, (d) => { (d.meals ||= {})[t.dataset.id] = t.checked; }); rerenderSoon(); }
@@ -726,10 +849,11 @@ function refreshSummary() {
 
 document.addEventListener("input", (ev) => {
   const t = ev.target, k = curDate;
+  if (t.dataset.wf || (t.dataset.ef && t.type !== "checkbox" && t.tagName !== "SELECT")) { editField(t); return; }
   if (t.dataset.field) {
     editDay(k, (d) => { if (t.value === "") delete d[t.dataset.field]; else d[t.dataset.field] = t.value; });
   } else if (t.dataset.set) {
-    const ex = EX[t.dataset.set], i = +t.dataset.i;
+    const ex = exById(t.dataset.set), i = +t.dataset.i;
     editDay(k, (d) => {
       d.ex ||= {};
       const rec = (d.ex[ex.id] ||= { sets: Array.from({ length: ex.sets }, () => ({})) });
@@ -741,6 +865,26 @@ document.addEventListener("input", (ev) => {
   }
 });
 
+
+function editField(t) {
+  const pl = editablePlan();
+  const w = pl.workouts[t.dataset.w];
+  if (!w) return;
+  if (t.dataset.wf) { w[t.dataset.wf] = t.value; touchPlan(); return; }
+  const e = w.exercises.find((x) => x.id === t.dataset.e);
+  if (!e) return;
+  const f = t.dataset.ef;
+  if (f === "sets" || f === "min" || f === "max") {
+    const v = parseInt(t.value, 10);
+    if (!isFinite(v) || v < 1) return;
+    e[f] = f === "sets" ? Math.min(v, 10) : v;
+    if (e.max < e.min) e.max = e.min;
+  } else if (f === "kind") { e.bodyweight = t.value === "bodyweight"; e.assisted = t.value === "assisted"; }
+  else if (f === "shoulder") e.shoulder = t.checked;
+  else if (f === "video") { if (t.value.trim()) e.video = t.value.trim(); else delete e.video; }
+  else e[f] = t.value;
+  touchPlan();
+}
 function exportData() {
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
